@@ -1,0 +1,7 @@
+{
+  "FIELD_ALIASES": {
+    "name": ["full_name", "student_name", "nom"],
+    "email": ["mail", "e-mail", "courriel"],
+    "phoneNumber": ["phone", "mobile", "tel"]
+  }
+}

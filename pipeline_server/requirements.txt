@@ -1,0 +1,16 @@
+fastapi
+uvicorn
+python-multipart
+pandas
+numpy
+openpyxl
+chardet
+rapidfuzz
+phonenumbers
+python-dateutil
+arabic-reshaper
+python-bidi
+gender-guesser
+scikit-learn
+loguru
+sqlalchemy
