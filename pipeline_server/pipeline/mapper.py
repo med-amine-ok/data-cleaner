@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import json
 from typing import Any, Mapping
+import unicodedata
 
 import pandas as pd
 from rapidfuzz import fuzz, process
@@ -89,9 +90,29 @@ class ColumnAutoMapper:
         renamed = dataframe.copy()
         results: list[MappingResult] = []
         new_columns: dict[str, str] = {}
+        normalized_columns = {self._normalize_text(str(column)) for column in renamed.columns}
+
+        first_name_markers = {
+            "prenom",
+            "prenom",
+            "firstname",
+            "first_name",
+            "first name",
+            "fname",
+            "forename",
+            "givenname",
+            "given_name",
+            "given name",
+            "fstname",
+            "fristname",
+        }
+        has_first_name_signal = any(marker in normalized_columns for marker in first_name_markers)
 
         for original_column in renamed.columns:
-            canonical, score, alias = self._map_single_column(str(original_column))
+            canonical, score, alias = self._map_single_column(
+                str(original_column),
+                has_first_name_signal=has_first_name_signal,
+            )
             if canonical is not None:
                 new_columns[str(original_column)] = canonical
                 results.append(
@@ -104,9 +125,14 @@ class ColumnAutoMapper:
                 )
 
         renamed = renamed.rename(columns=new_columns)
+        renamed = self._collapse_duplicate_columns(renamed)
         return renamed, results
 
-    def _map_single_column(self, column_name: str) -> tuple[str | None, float, str]:
+    def _map_single_column(
+        self,
+        column_name: str,
+        has_first_name_signal: bool = False,
+    ) -> tuple[str | None, float, str]:
         """
         Map one raw column name to a canonical field.
 
@@ -118,9 +144,23 @@ class ColumnAutoMapper:
         """
         normalized = self._normalize_text(column_name)
 
+        # In French-style sheets, `nom` is usually the family name when
+        # a separate first-name column (e.g. `prenom`) is present.
+        if has_first_name_signal and normalized in {"nom", "nom de famille"}:
+            return "last", 100.0, "french_name_rule"
+
+        heuristic_field = self._heuristic_name_field(normalized)
+        if heuristic_field is not None:
+            return heuristic_field, 99.0, "name_header_heuristic"
+
         if normalized in self._alias_to_field:
             canonical = self._alias_to_field[normalized]
             return canonical, 100.0, normalized
+
+        # Very short headers are often ambiguous (e.g., 'lat' vs 'last').
+        # Only accept them when they match an alias exactly.
+        if len(normalized) <= 3:
+            return None, 0.0, ""
 
         all_aliases = list(self._alias_to_field.keys())
         best_match = process.extractOne(
@@ -138,6 +178,49 @@ class ColumnAutoMapper:
 
         canonical = self._alias_to_field[matched_alias]
         return canonical, float(score), matched_alias
+
+    def _heuristic_name_field(self, normalized: str) -> str | None:
+        """
+        Heuristically classify common first/last-name header variants.
+
+        This catches frequent typos such as 'fstname' and 'laname' that may
+        not be present in aliases but should still map deterministically.
+        """
+        compact = "".join(ch for ch in normalized if ch.isalnum())
+        if not compact:
+            return None
+
+        first_name_tokens = {
+            "fname",
+            "firstname",
+            "firstn",
+            "fristname",
+            "fstname",
+            "forename",
+            "givenname",
+            "prenom",
+            "prenomnom",
+        }
+        last_name_tokens = {
+            "lname",
+            "lastname",
+            "lastnamee",
+            "lastn",
+            "laname",
+            "lasname",
+            "sirname",
+            "surname",
+            "familyname",
+            "nomdefamille",
+        }
+
+        if compact in first_name_tokens:
+            return "name"
+
+        if compact in last_name_tokens:
+            return "last"
+
+        return None
 
     def _build_alias_lookup(self, field_aliases: Mapping[str, list[str]]) -> dict[str, str]:
         """
@@ -167,6 +250,42 @@ class ColumnAutoMapper:
             A lowercase, trimmed, whitespace-collapsed string.
         """
         text = "" if value is None else str(value)
+        text = text.replace("\ufffd", " ")
+        text = unicodedata.normalize("NFKD", text)
+        text = "".join(ch for ch in text if not unicodedata.combining(ch))
         text = text.strip().lower()
         text = " ".join(text.split())
         return text
+
+    def _collapse_duplicate_columns(self, dataframe: pd.DataFrame) -> pd.DataFrame:
+        """
+        Merge duplicate canonical columns after renaming.
+
+        Args:
+            dataframe: Renamed dataframe that may contain duplicate column labels.
+
+        Returns:
+            A dataframe with unique column names, keeping the first non-empty value
+            across duplicate columns.
+        """
+        if dataframe.columns.is_unique:
+            return dataframe
+
+        collapsed = pd.DataFrame(index=dataframe.index)
+        seen: set[str] = set()
+
+        for column_name in dataframe.columns:
+            column_key = str(column_name)
+            if column_key in seen:
+                continue
+            seen.add(column_key)
+
+            subset = dataframe.loc[:, dataframe.columns == column_name]
+            if isinstance(subset, pd.Series):
+                collapsed[column_key] = subset
+                continue
+
+            cleaned = subset.replace("", pd.NA).bfill(axis=1).iloc[:, 0]
+            collapsed[column_key] = cleaned.fillna("")
+
+        return collapsed

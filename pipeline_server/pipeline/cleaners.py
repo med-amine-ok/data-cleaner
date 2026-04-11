@@ -5,7 +5,7 @@ import unicodedata
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
-
+import pandas as pd
 import arabic_reshaper
 import phonenumbers
 from bidi.algorithm import get_display
@@ -63,6 +63,34 @@ ARABIC_INDIC_DIGITS: dict[int, str] = {
     ord("۷"): "7",
     ord("۸"): "8",
     ord("۹"): "9",
+}
+
+USER_TYPE_ALIASES: dict[str, str] = {
+    # Students
+    "student": "student", "eleve": "student", "élève": "student", "etudiant": "student",
+    "étudiant": "student", "طالب": "student", "تلميذ": "student",
+    # Teachers
+    "teacher": "teacher", "prof": "teacher", "professeur": "teacher",
+    "enseignant": "teacher", "أستاذ": "teacher", "معلم": "teacher",
+    # Parents
+    "parent": "parent", "father": "parent", "mother": "parent", "pere": "parent",
+    "père": "parent", "mere": "parent", "mère": "parent", "ولي": "parent", "أب": "parent", "أم": "parent",
+    # Schools
+    "school": "school", "ecole": "school", "école": "school", "etablissement": "school",
+    "مدرسة": "school", "مؤسسة": "school",
+    # Admins
+    "admin": "admin", "administrateur": "admin", "مدير": "admin", "مشرف": "admin"
+}
+
+SCHOOL_TYPE_ALIASES: dict[str, str] = {
+    "private": "private", "prive": "private", "privé": "private", "خاص": "private", "خاصة": "private",
+    "language": "language", "langue": "language", "ecole de langue": "language", "لغات": "language", "مدرسة لغات": "language",
+    "university": "university", "universite": "university", "université": "university", "جامعة": "university",
+    "formation": "formation", "centre de formation": "formation", "تكوين": "formation", "مركز تكوين": "formation",
+    "public": "public", "etatique": "public", "عام": "public", "حكومي": "public",
+    "support": "support", "soutien": "support", "cours de soutien": "support", "دعم": "support", "دروس دعم": "support",
+    "private-university": "private-university", "universite prive": "private-university", "جامعة خاصة": "private-university",
+    "preschool": "preschool", "creche": "preschool", "maternelle": "preschool", "روضة": "preschool", "تحضيري": "preschool"
 }
 
 EMAIL_PATTERN = re.compile(
@@ -185,6 +213,20 @@ def clean_name(value: Any) -> str | None:
     return cleaned or None
 
 
+def clean_last(value: Any) -> str | None:
+    """
+    Clean a person's last (family) name.
+
+    Args:
+        value: Raw last name value.
+
+    Returns:
+        A cleaned last name string, or None if the input is empty.
+    """
+    cleaned = _clean_display_text(value)
+    return cleaned or None
+
+
 def clean_username(value: Any) -> str | None:
     """
     Normalize a username without generating a new one.
@@ -251,10 +293,29 @@ def clean_phone_number(value: Any, region: str = "DZ") -> str | None:
     try:
         parsed = phonenumbers.parse(text, region)
     except phonenumbers.NumberParseException:
-        return None
+        parsed = None
 
-    if not phonenumbers.is_valid_number(parsed):
-        return None
+    if parsed is None or not phonenumbers.is_valid_number(parsed):
+        digits = re.sub(r"\D+", "", text)
+        if not digits:
+            return None
+
+        candidate = None
+        if digits.startswith("213") and len(digits) in {11, 12}:
+            candidate = f"+{digits}"
+        elif len(digits) == 10 and digits.startswith("0"):
+            candidate = f"+213{digits[1:]}"
+        elif len(digits) == 9:
+            candidate = f"+213{digits}"
+
+        if candidate:
+            try:
+                parsed = phonenumbers.parse(candidate, None)
+            except phonenumbers.NumberParseException:
+                parsed = None
+
+        if parsed is None or not phonenumbers.is_valid_number(parsed):
+            return None
 
     return phonenumbers.format_number(parsed, phonenumbers.PhoneNumberFormat.E164)
 
@@ -275,11 +336,22 @@ def clean_dob(value: Any) -> int | None:
     if isinstance(value, bool):
         return None
 
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+
     if isinstance(value, datetime):
         parsed_datetime = value
     elif isinstance(value, date):
         parsed_datetime = datetime.combine(value, datetime.min.time())
     elif isinstance(value, (int, float)):
+        try:
+            if pd.isna(value):
+                return None
+        except (TypeError, ValueError):
+            pass
         numeric_value = float(value)
         if numeric_value > 10_000_000_000:
             parsed_datetime = datetime.fromtimestamp(numeric_value / 1000.0, tz=timezone.utc)
@@ -296,17 +368,49 @@ def clean_dob(value: Any) -> int | None:
 
         text = text.translate(ARABIC_INDIC_DIGITS)
 
-        if re.fullmatch(r"\d{4}", text):
-            year = int(text)
-            if 1900 <= year <= datetime.now().year:
-                parsed_datetime = datetime(year, 1, 1)
-            else:
-                return None
-        else:
+        candidate_texts = [text]
+        year_fix_match = re.search(r"(?P<year>\d{5,})(?=[-/])", text)
+        if year_fix_match:
+            fixed_text = text[: year_fix_match.start("year")] + year_fix_match.group("year")[:4] + text[year_fix_match.end("year") :]
+            candidate_texts.append(fixed_text)
+
+        parsed_datetime = None
+        for candidate_text in candidate_texts:
+            normalized_match = re.fullmatch(r"(?P<year>\d{4,})[-/](?P<month>\d{1,2})[-/](?P<day>\d{1,2})", candidate_text)
+            if normalized_match:
+                year_text = normalized_match.group("year")
+                month_text = normalized_match.group("month")
+                day_text = normalized_match.group("day")
+
+                candidate_years: list[int] = []
+                if len(year_text) > 4:
+                    candidate_years.append(int(year_text[:4]))
+                candidate_years.append(int(year_text))
+
+                for candidate_year in candidate_years:
+                    try:
+                        parsed_datetime = datetime(candidate_year, int(month_text), int(day_text))
+                        break
+                    except ValueError:
+                        continue
+                if parsed_datetime is not None:
+                    break
+
+            if re.fullmatch(r"\d{4}", candidate_text):
+                year = int(candidate_text)
+                if 1900 <= year <= datetime.now().year:
+                    parsed_datetime = datetime(year, 1, 1)
+                    break
+                continue
+
             try:
-                parsed_datetime = date_parser.parse(text, dayfirst=True, fuzzy=True)
+                parsed_datetime = date_parser.parse(candidate_text, dayfirst=True, fuzzy=True)
+                break
             except (ValueError, OverflowError):
-                return None
+                continue
+
+        if parsed_datetime is None:
+            return None
 
     if parsed_datetime.tzinfo is None:
         parsed_datetime = parsed_datetime.replace(tzinfo=timezone.utc)
@@ -348,6 +452,18 @@ def clean_gender(value: Any) -> str | None:
         return "female"
 
     return None
+
+def clean_user_type(value: Any) -> str | None:
+    """Normalize user type using French/Arabic aliases."""
+    text = normalize_text(value).lower()
+    if not text: return None
+    return USER_TYPE_ALIASES.get(text)
+
+def clean_school_type(value: Any) -> str | None:
+    """Normalize school type using French/Arabic aliases."""
+    text = normalize_text(value).lower()
+    if not text: return None
+    return SCHOOL_TYPE_ALIASES.get(text)
 
 
 def _build_normalized_lookup(lookup: Mapping[str, str]) -> dict[str, str]:

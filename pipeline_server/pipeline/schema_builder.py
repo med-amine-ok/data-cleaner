@@ -5,6 +5,8 @@ from typing import Any, Mapping
 
 import pandas as pd
 
+from pipeline.cleaners import clean_dob
+
 
 @dataclass(frozen=True)
 class BuildResult:
@@ -110,6 +112,7 @@ class SchemaBuilder:
             BuildResult with a school record or rejection.
         """
         school_type = self._normalize_school_type(row.get("schoolType"))
+        display_name = self._normalize_display_name(row)
 
         if not school_type:
             return BuildResult(
@@ -121,13 +124,13 @@ class SchemaBuilder:
         record = {
             "_id": self._optional_string(row.get("_id")),
             "email": self._required_string(row.get("email"), "email"),
-            "name": self._required_string(row.get("name"), "name"),
+            "name": display_name,
             "username": self._required_string(row.get("username"), "username"),
             "phoneNumber": self._normalize_phone_number(row.get("phoneNumber")),
             "location": self._normalize_location(row.get("location")),
             "profilePicture": self._normalize_profile_picture(row.get("profilePicture")),
             "socialLinks": self._normalize_social_links(row.get("socialLinks")),
-            "verificationType": self._optional_verification_type(row.get("verificationType")),
+            "verificationType": self._normalize_verification_type(row.get("verificationType")),
             "description": self._optional_string(row.get("description")),
             "preferences": self._normalize_preferences(row.get("preferences")),
             "blurhash": self._optional_string(row.get("blurhash")),
@@ -138,7 +141,7 @@ class SchemaBuilder:
             "gender": None,
         }
 
-        missing_fields = self._collect_missing_required_fields(record, ["email", "name", "username", "phoneNumber", "profilePicture"])
+        missing_fields = self._collect_missing_required_fields(record, ["email", "name", "username", "profilePicture"])
         if missing_fields:
             return BuildResult(
                 record=None,
@@ -159,18 +162,21 @@ class SchemaBuilder:
         Returns:
             BuildResult with a non-school record or rejection.
         """
+        display_name = self._normalize_display_name(row)
         last_name = self._required_string(row.get("last"), "last")
+        if not last_name:
+            last_name = self._derive_last_name(display_name)
 
         record = {
             "_id": self._optional_string(row.get("_id")),
             "email": self._required_string(row.get("email"), "email"),
-            "name": self._required_string(row.get("name"), "name"),
+            "name": display_name,
             "username": self._required_string(row.get("username"), "username"),
             "phoneNumber": self._normalize_phone_number(row.get("phoneNumber")),
             "location": self._normalize_location(row.get("location")),
             "profilePicture": self._normalize_profile_picture(row.get("profilePicture")),
             "socialLinks": self._normalize_social_links(row.get("socialLinks")),
-            "verificationType": self._optional_verification_type(row.get("verificationType")),
+            "verificationType": self._normalize_verification_type(row.get("verificationType")),
             "description": self._optional_string(row.get("description")),
             "preferences": self._normalize_preferences(row.get("preferences")),
             "blurhash": self._optional_string(row.get("blurhash")),
@@ -181,7 +187,7 @@ class SchemaBuilder:
             "gender": self._normalize_gender(row.get("gender")),
         }
 
-        missing_fields = self._collect_missing_required_fields(record, ["email", "name", "username", "phoneNumber", "profilePicture", "last"])
+        missing_fields = self._collect_missing_required_fields(record, ["email", "name", "username", "profilePicture", "last"])
         if missing_fields:
             return BuildResult(
                 record=None,
@@ -190,6 +196,51 @@ class SchemaBuilder:
             )
 
         return BuildResult(record=record, is_valid=True, reason="")
+
+    def _normalize_display_name(self, row: Mapping[str, Any]) -> str | None:
+        """
+        Build a full display name from the available name fields.
+
+        Args:
+            row: Input row.
+
+        Returns:
+            A full display name when a first-name signal exists.
+        """
+        name = self._optional_string(row.get("name"))
+        last = self._optional_string(row.get("last"))
+
+        if not name:
+            return last or None
+
+        if not last:
+            return name
+
+        name_parts = name.split()
+        if name_parts and name_parts[-1].casefold() == last.casefold():
+            return name
+
+        return f"{name} {last}"
+
+    def _derive_last_name(self, value: Any) -> str | None:
+        """
+        Derive a last name from a full name value.
+
+        Args:
+            value: Full name value from the source row.
+
+        Returns:
+            The final token of the name when present, otherwise None.
+        """
+        text = self._optional_string(value)
+        if not text:
+            return None
+
+        parts = [part for part in text.split() if part]
+        if len(parts) < 2:
+            return None
+
+        return parts[-1]
 
     def _resolve_user_type(self, row: Mapping[str, Any]) -> str | None:
         """
@@ -209,6 +260,9 @@ class SchemaBuilder:
             return "school"
 
         if self._optional_string(row.get("last")):
+            return "student"
+
+        if self._optional_string(row.get("name")):
             return "student"
 
         return None
@@ -253,25 +307,7 @@ class SchemaBuilder:
         Returns:
             Unix timestamp or None.
         """
-        if value is None or value == "":
-            return None
-
-        if isinstance(value, bool):
-            return None
-
-        if isinstance(value, (int, float)):
-            numeric_value = int(value)
-            return numeric_value if numeric_value > 0 else None
-
-        text = str(value).strip()
-        if not text:
-            return None
-
-        try:
-            numeric_value = int(float(text))
-            return numeric_value if numeric_value > 0 else None
-        except ValueError:
-            return None
+        return clean_dob(value)
 
     def _normalize_profile_picture(self, value: Any) -> str:
         """

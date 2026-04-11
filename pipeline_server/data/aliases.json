@@ -1,7 +1,21 @@
 {
   "FIELD_ALIASES": {
-    "name": ["full_name", "student_name", "nom"],
-    "email": ["mail", "e-mail", "courriel"],
-    "phoneNumber": ["phone", "mobile", "tel"]
+    "name": ["full_name", "fullname", "first_name", "first name", "fname", "forename", "given_name", "student_name", "student name", "prenom", "prénom", "prenom nom", "الاسم", "الاسم الكامل", "اسم الطالب"],
+    "last": ["last_name", "lastname", "last name", "lname", "laname", "family_name", "family name", "surname", "nom", "nom de famille", "اللقب", "اسم العائلة"],
+    "username": ["user", "login", "pseudo", "nom_utilisateur", "اسم المستخدم"],
+    "email": ["mail", "e-mail", "email address", "courriel", "adresse mail", "البريد الالكتروني", "البريد الإلكتروني"],
+    "phoneNumber": ["phone", "phone number", "mobile", "cell", "tel", "telephone", "num_tel", "numero tel", "numéro tel", "numéro de téléphone", "رقم الهاتف"],
+    "userType": ["type", "role", "category", "user type", "type_utilisateur", "نوع المستخدم"],
+    "schoolType": ["school type", "type_school", "level_school", "type d'ecole", "نوع المؤسسة"],
+    "profilePicture": ["profile picture", "avatar", "photo", "image", "picture"],
+    "description": ["bio", "about", "notes", "description", "note", "commentaire"],
+    "preferences": ["interest", "interests", "subjects", "subject", "matières", "matieres", "الاهتمامات"],
+    "wilaya": ["state", "region", "province", "wilaya", "wilayas", "الولاية"],
+    "commune": ["city", "town", "commune", "district", "municipality", "البلدية"],
+    "DOB": ["dob", "date of birth", "birth date", "birthdate", "date_naissance", "date de naissance", "تاريخ الميلاد"],
+    "gender": ["sex", "genre", "sexe", "male/female", "gender", "الجنس"],
+    "verificationType": ["verification", "verified by", "verification type"],
+    "blurhash": ["blur hash", "thumbnail", "blur"],
+    "socialLinks": ["social", "social links", "links", "profiles"]
   }
 }

@@ -4,6 +4,7 @@ python-multipart
 pandas
 numpy
 openpyxl
+odfpy
 chardet
 rapidfuzz
 phonenumbers

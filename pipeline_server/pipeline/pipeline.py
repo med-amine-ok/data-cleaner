@@ -16,8 +16,10 @@ from pipeline.cleaners import (
     clean_dob,
     clean_email,
     clean_gender,
+    clean_last,
+    clean_user_type,
+    clean_school_type,
     clean_name,
-    
     clean_phone_number,
     clean_preferences,
     clean_profile_picture,
@@ -87,6 +89,7 @@ class StudentProfilePipeline:
         raw_dataframe = self._reader.read(file_path)
         mapped_dataframe, mapping_results = self._mapper.map_columns(raw_dataframe)
         cleaned_dataframe = self._clean_dataframe(mapped_dataframe)
+        cleaned_dataframe = self._compose_display_name(cleaned_dataframe)
 
         deduped_dataframe, duplicate_records = self._deduplicator.find_duplicates(cleaned_dataframe)
         inferred_dataframe = self._inferer.infer_dataframe(deduped_dataframe)
@@ -135,6 +138,9 @@ class StudentProfilePipeline:
         if "name" in working.columns:
             working["name"] = working["name"].map(clean_name)
 
+        if "last" in working.columns:
+            working["last"] = working["last"].map(clean_last)
+
         if "email" in working.columns:
             working["email"] = working["email"].map(clean_email)
 
@@ -173,10 +179,10 @@ class StudentProfilePipeline:
             working["location"] = working.apply(self._build_location_object, axis=1)
 
         if "userType" in working.columns:
-            working["userType"] = working["userType"].map(self._normalize_user_type)
+            working["userType"] = working["userType"].map(clean_user_type)
 
         if "schoolType" in working.columns:
-            working["schoolType"] = working["schoolType"].map(self._normalize_text_lower)
+            working["schoolType"] = working["schoolType"].map(clean_school_type)
 
         if "verificationType" in working.columns:
             working["verificationType"] = working["verificationType"].map(self._normalize_text_lower)
@@ -192,9 +198,55 @@ class StudentProfilePipeline:
 
         return working
 
+    def _compose_display_name(self, dataframe: pd.DataFrame) -> pd.DataFrame:
+        """
+        Merge split name parts into the full display name when possible.
+
+        Args:
+            dataframe: Cleaned dataframe with name-related columns.
+
+        Returns:
+            A dataframe where the name column contains the full display name.
+        """
+        if dataframe.empty or "name" not in dataframe.columns or "last" not in dataframe.columns:
+            return dataframe.copy()
+
+        working = dataframe.copy()
+        working["name"] = working.apply(self._merge_name_and_last, axis=1)
+        return working
+
+    def _merge_name_and_last(self, row: pd.Series) -> str | None:
+        """
+        Build a full display name from the available name parts.
+
+        Args:
+            row: One dataframe row.
+
+        Returns:
+            A full display name when a first name is present, otherwise the
+            original name value.
+        """
+        name_value = self._normalize_optional_text(row.get("name"))
+        last_value = self._normalize_optional_text(row.get("last"))
+
+        if not name_value:
+            return None
+
+        if not last_value:
+            return name_value
+
+        name_parts = name_value.split()
+        if name_parts and name_parts[-1].casefold() == last_value.casefold():
+            return name_value
+
+        return f"{name_value} {last_value}"
+
     def _detect_anomalies(self, dataframe: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
         """
         Detect outliers using a small feature set and quarantine strong anomalies.
+
+        Uses adaptive contamination based on dataset size to avoid over-quarantining
+        small datasets. Requires at least 20 rows to run anomaly detection.
 
         Args:
             dataframe: Cleaned dataframe after inference.
@@ -208,7 +260,7 @@ class StudentProfilePipeline:
             return pd.DataFrame(), dataframe.copy()
 
         features = self._build_anomaly_features(dataframe)
-        if features.empty or len(features) < 8:
+        if features.empty or len(features) < 20:
             return pd.DataFrame(), dataframe.copy()
 
         if features.shape[1] == 0:
@@ -217,9 +269,11 @@ class StudentProfilePipeline:
         if np.all(np.nanstd(features.to_numpy(dtype=float), axis=0) == 0):
             return pd.DataFrame(), dataframe.copy()
 
+        adaptive_contamination = max(0.01, min(0.05, 3.0 / len(features)))
+
         model = IsolationForest(
             random_state=42,
-            contamination=self._anomaly_contamination,
+            contamination=adaptive_contamination,
         )
         predictions = model.fit_predict(features)
         anomaly_scores = model.decision_function(features)

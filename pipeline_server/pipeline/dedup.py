@@ -94,19 +94,38 @@ class SmartDeduplicator:
                 group_counter += 1
 
                 canonical_index = int(group.index[0])
+                canonical_row = working.loc[canonical_index]
+                duplicate_indexes: list[int] = []
+
                 for row_index in group.index:
+                    if int(row_index) == canonical_index:
+                        continue
+
+                    candidate_row = working.loc[row_index]
+                    if not self._has_strong_duplicate_signal(canonical_row, candidate_row):
+                        continue
+
+                    duplicate_indexes.append(int(row_index))
+
+                if not duplicate_indexes:
+                    continue
+
+                working.at[canonical_index, "_duplicate_group_id"] = group_id
+                working.at[canonical_index, "_duplicate_score"] = 100.0
+                working.at[canonical_index, "_duplicate_reason"] = "exact_email_match"
+
+                for row_index in duplicate_indexes:
                     working.at[row_index, "_duplicate_group_id"] = group_id
                     working.at[row_index, "_duplicate_score"] = 100.0
                     working.at[row_index, "_duplicate_reason"] = "exact_email_match"
 
-                for row_index in group.index[1:]:
                     duplicate_rows.append(self._row_to_dict(working.loc[row_index]))
                     duplicate_rows[-1]["duplicate_group_id"] = group_id
                     duplicate_rows[-1]["duplicate_reason"] = "exact_email_match"
                     duplicate_rows[-1]["duplicate_score"] = 100.0
                     duplicate_rows[-1]["canonical_row_index"] = canonical_index
 
-            working = working.drop_duplicates(subset=["email"], keep="first")
+                working = working.drop(index=duplicate_indexes)
 
         duplicates = self._fuzzy_duplicate_pass(working, group_counter, duplicate_rows)
 
@@ -120,6 +139,24 @@ class SmartDeduplicator:
             canonical_columns.extend(["_duplicate_group_id", "_duplicate_score", "_duplicate_reason"])
 
         return working[canonical_columns], duplicate_frame
+
+    def _has_strong_duplicate_signal(self, left_row: pd.Series, right_row: pd.Series) -> bool:
+        """
+        Decide whether two rows sharing the same email are true duplicates.
+
+        Exact-email alone can be too aggressive in messy datasets where reused
+        placeholder emails are common, so we require another strong signal.
+        """
+        if self._string_similarity(left_row.get("phoneNumber"), right_row.get("phoneNumber")) >= 95.0:
+            return True
+
+        if self._dob_similarity(left_row.get("DOB"), right_row.get("DOB")) >= 100.0:
+            return True
+
+        if self._string_similarity(left_row.get("name"), right_row.get("name")) >= 92.0:
+            return True
+
+        return False
 
     def _fuzzy_duplicate_pass(
         self,
@@ -187,10 +224,39 @@ class SmartDeduplicator:
         Returns:
             A coarse key based on wilaya or location.
         """
-        wilaya_value = str(row.get("wilaya", "") or row.get("location", "") or "").strip().lower()
+        wilaya_value = self._first_text_value(row.get("wilaya", ""))
+        if not wilaya_value:
+            wilaya_value = self._first_text_value(row.get("location", ""))
         if not wilaya_value:
             return ""
         return wilaya_value[:8]
+
+    def _first_text_value(self, value: Any) -> str:
+        """
+        Convert a value that may be a pandas Series into a safe text scalar.
+
+        Args:
+            value: A row value that may be scalar-like or a Series.
+
+        Returns:
+            A lowercase stripped string, or an empty string when missing.
+        """
+        if value is None:
+            return ""
+
+        if isinstance(value, pd.Series):
+            if value.empty:
+                return ""
+            first_non_empty = value.astype(str).replace({"nan": "", "None": ""})
+            first_non_empty = first_non_empty[first_non_empty.str.strip() != ""]
+            if first_non_empty.empty:
+                return ""
+            value = first_non_empty.iloc[0]
+
+        text = str(value).strip().lower()
+        if text in {"", "nan", "none", "null"}:
+            return ""
+        return text
 
     def _composite_score(self, left_row: pd.Series, right_row: pd.Series) -> float:
         """
