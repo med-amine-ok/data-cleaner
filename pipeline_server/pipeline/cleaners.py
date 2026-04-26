@@ -290,6 +290,12 @@ def clean_phone_number(value: Any, region: str = "DZ") -> str | None:
     if not text:
         return None
 
+    # Some sheets store multiple phone numbers in one cell (e.g. "a / b").
+    # Keep the first number only.
+    text = re.split(r"\s*(?:/|\||;|,|،)+\s*", text, maxsplit=1)[0].strip()
+    if not text:
+        return None
+
     try:
         parsed = phonenumbers.parse(text, region)
     except phonenumbers.NumberParseException:

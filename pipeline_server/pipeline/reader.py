@@ -6,9 +6,6 @@ from typing import Any
 
 import chardet
 import pandas as pd
-from odf import teletype
-from odf.opendocument import load as load_ods
-from odf.table import Table, TableCell, TableRow
 from openpyxl import load_workbook
 
 
@@ -202,6 +199,15 @@ class FileIngester:
         Returns:
             A DataFrame with all values loaded as strings.
         """
+        try:
+            from odf import teletype as odf_teletype
+            from odf.opendocument import load as load_ods
+            from odf.table import Table, TableCell, TableRow
+        except ModuleNotFoundError as exc:
+            raise ModuleNotFoundError(
+                "ODS support requires 'odfpy'. Install it in the Python environment running the server."
+            ) from exc
+
         document = load_ods(str(path))
         tables = document.spreadsheet.getElementsByType(Table)
         if not tables:
@@ -217,7 +223,7 @@ class FileIngester:
 
             for cell in row.getElementsByType(TableCell):
                 col_repeat = self._safe_repeat(cell.getAttribute("numbercolumnsrepeated"))
-                cell_text = self._extract_ods_cell_text(cell)
+                cell_text = self._extract_ods_cell_text(cell, odf_teletype)
                 base_row.extend([cell_text] * col_repeat)
 
             normalized_row = self._trim_trailing_empty(base_row)
@@ -252,17 +258,18 @@ class FileIngester:
         dataframe = pd.DataFrame(data_rows, columns=header)
         return self._normalize_dataframe(dataframe)
 
-    def _extract_ods_cell_text(self, cell: TableCell) -> str:
+    def _extract_ods_cell_text(self, cell: Any, odf_teletype: Any) -> str:
         """
         Extract a safe string value from an ODS cell.
 
         Args:
             cell: ODS table cell.
+            odf_teletype: ODF teletype module used to extract rich text.
 
         Returns:
             Extracted cell text as a string.
         """
-        text_value = teletype.extractText(cell).strip()
+        text_value = odf_teletype.extractText(cell).strip()
         if text_value:
             return text_value
 

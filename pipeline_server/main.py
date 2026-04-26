@@ -1,5 +1,6 @@
 from __future__ import annotations
 import json
+from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -149,6 +150,8 @@ def _rows_to_xlsx_bytes(rows: list[dict[str, Any]], sheet_title: str = "Sheet1")
         cells = []
         for header in headers:
             val = row.get(header)
+            if header == "DOB":
+                val = _format_dob_for_sheet(val)
             if isinstance(val, (dict, list)):
                 val = json.dumps(val, ensure_ascii=False)
             cells.append(val)
@@ -157,6 +160,52 @@ def _rows_to_xlsx_bytes(rows: list[dict[str, Any]], sheet_title: str = "Sheet1")
     output = BytesIO()
     workbook.save(output)
     return output.getvalue()
+
+
+def _format_dob_for_sheet(value: Any) -> str | None:
+    """
+    Format DOB values for spreadsheet output as dd-mm-yyyy.
+
+    Args:
+        value: Raw DOB value from the pipeline output.
+
+    Returns:
+        Date string in dd-mm-yyyy format, or None if the value is invalid.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+
+    parsed_datetime: datetime | None = None
+
+    if isinstance(value, datetime):
+        parsed_datetime = value
+    elif isinstance(value, (int, float)):
+        timestamp = float(value)
+        if timestamp > 10_000_000_000:
+            timestamp = timestamp / 1000.0
+        if timestamp <= 0:
+            return None
+        try:
+            parsed_datetime = datetime.fromtimestamp(timestamp, tz=timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            return None
+    else:
+        text = str(value).strip()
+        if not text:
+            return None
+        for fmt in ("%d-%m-%Y", "%Y-%m-%d", "%d/%m/%Y", "%Y/%m/%d"):
+            try:
+                parsed_datetime = datetime.strptime(text, fmt).replace(tzinfo=timezone.utc)
+                break
+            except ValueError:
+                continue
+        if parsed_datetime is None:
+            return text
+
+    if parsed_datetime.tzinfo is None:
+        parsed_datetime = parsed_datetime.replace(tzinfo=timezone.utc)
+
+    return parsed_datetime.strftime("%d-%m-%Y")
 
 
 def _build_zip_response(result: Mapping[str, Any]) -> StreamingResponse:
